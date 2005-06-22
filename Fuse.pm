@@ -19,16 +19,18 @@ our @ISA = qw(Exporter DynaLoader);
 # This allows declaration	use Fuse ':all';
 # If you do not need this, moving things directly into @EXPORT or @EXPORT_OK
 # will save memory.
-our %EXPORT_TAGS = ( 'all' => [ qw(
-	FUSE_DEBUG
-) ] );
+our %EXPORT_TAGS = (
+		    'all' => [ qw(FUSE_DEBUG XATTR_CREATE XATTR_REPLACE) ],
+		    'debug' => [ qw(FUSE_DEBUG) ],
+		    'xattr' => [ qw(XATTR_CREATE XATTR_REPLACE) ]
+		    );
 
 our @EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } );
 
 our @EXPORT = qw(
 	FUSE_DEBUG
 );
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 sub AUTOLOAD {
     # This AUTOLOAD is used to 'autoload' constants from the constant()
@@ -62,15 +64,28 @@ sub AUTOLOAD {
     goto &$AUTOLOAD;
 }
 
+sub XATTR_CREATE {
+    # See <sys/xattr.h>.
+    return 1;
+}
+
+sub XATTR_REPLACE {
+    # See <sys/xattr.h>.
+    return 2;
+}
+
 bootstrap Fuse $VERSION;
 
 sub main {
-	my (@subs) = (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
+	my (@subs) = (0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0);
 	my (@names) = qw(getattr readlink getdir mknod mkdir unlink rmdir symlink
-			 rename link chmod chown truncate utime open read write statfs);
+			 rename link chmod chown truncate utime open read write statfs
+			 flush release fsync setxattr getxattr listxattr removexattr);
+	my (@validOpts) = qw(allow_other);
 	my ($tmp) = 0;
 	my (%mapping) = map { $_ => $tmp++ } (@names);
-	my (%otherargs) = (debug=>0, mountpoint=>"");
+	my (%optmap) = map { $_ => 1 } (@validOpts);
+	my (%otherargs) = (debug=>0, mountpoint=>"", mountopts=>"");
 	while(my $name = shift) {
 		my ($subref) = shift;
 		if(exists($otherargs{$name})) {
@@ -83,7 +98,12 @@ sub main {
 			$subs[$mapping{$name}] = $subref;
 		}
 	}
-	perl_fuse_main($otherargs{debug},$otherargs{mountpoint},@subs);
+        foreach my $opt ( split(/,/,$otherargs{mountopts}) ) {
+          if ( ! exists($optmap{$opt}) ) {
+            croak "Use of an invalid mountopt argument";
+          }
+        }
+	perl_fuse_main($otherargs{debug},$otherargs{mountpoint},$otherargs{mountopts},@subs);
 }
 
 # Autoload methods go after =cut, and are processed by the autosplit program.
@@ -122,13 +142,17 @@ Every constant you need (file types, open() flags, error values,
 etc) can be imported either from POSIX or from Fcntl, often both.
 See their respective documentations, for more information.
 
-=head2 EXPORT
+=head2 EXPORTED SYMBOLS
 
-None by default.
+FUSE_DEBUG by default.
 
-=head2 EXPORTABLE CONSTANTS
+You can request all exportable symbols by using the tag ":all".
 
-None.
+You can request all debug symbols by using the tag ":debug".
+This will export FUSE_DEBUG.
+
+You can request the extended attribute symbols by using the tag ":xattr".
+This will export XATTR_CREATE and XATTR_REPLACE.
 
 =head2 FUNCTIONS
 
@@ -154,6 +178,22 @@ mountpoint => string
 
 The point at which to mount this filesystem.  There is no default, you must
 specify this.  An example would be '/mnt'.
+
+=back
+
+mountopts => string
+
+=over 1
+
+This is a comma seperated list of mount options to pass to the FUSE kernel
+module.
+
+At present, it allows the specification of the allow_other
+argument when mounting the new FUSE filesystem. To use this, you will also
+need 'user_allow_other' in /etc/fuse.conf as per the FUSE documention
+
+  mountopts => "allow_other" or
+  mountopts => ""
 
 =back
 
@@ -348,6 +388,70 @@ $namelen, $files, $files_free, $blocks, $blocks_avail, $blocksize
 or
 
 -ENOANO(), $namelen, $files, $files_free, $blocks, $blocks_avail, $blocksize
+
+=head3 flush
+
+Arguments: Pathname
+Returns an errno or 0 on success.
+
+Called to synchronise any cached data. This is called before the file
+is closed. It may be called multiple times before a file is closed.
+
+=head3 release
+
+Arguments: Pathname, numeric flags passed to open
+Returns an errno or 0 on success.
+
+Called to indicate that there are no more references to the file. Called once
+for every file with the same pathname and flags as were passed to open.
+
+=head3 fsync
+
+Arguments: Pathname, numeric flags
+Returns an errno or 0 on success.
+
+Called to synchronise the file's contents. If flags is non-zero,
+only synchronise the user data. Otherwise synchronise the user and meta data.
+
+=head3 setxattr
+
+Arguments: Pathname, extended attribute's name, extended attribute's value, numeric flags (which is an OR-ing of XATTR_CREATE and XATTR_REPLACE 
+Returns an errno or 0 on success.
+
+Called to set the value of the named extended attribute.
+
+If you wish to reject setting of a particular form of extended attribute name
+(e.g.: regexps matching user\..* or security\..*), then return - EOPNOTSUPP.
+
+If flags is set to XATTR_CREATE and the extended attribute already exists,
+this should fail with - EEXIST. If flags is set to XATTR_REPLACE
+and the extended attribute doesn't exist, this should fail with - ENOATTR.
+
+XATTR_CREATE and XATTR_REPLACE are provided by this module, but not exported
+by default. To import them:
+
+    use Fuse ':xattr';
+
+or:
+
+    use Fuse ':all';
+
+=head3 getxattr
+
+Arguments: Pathname, extended attribute's name
+Returns an errno, 0 if there was no value, or the extended attribute's value.
+
+Called to get the value of the named extended attribute.
+
+=head3 listxattr
+
+Arguments: Pathname
+Returns a list: 0 or more text strings (the extended attribute names), followed by a numeric errno (usually 0).
+
+=head3 removexattr
+
+Arguments: Pathname, extended attribute's name
+Returns an errno or 0 on success.
 
 =head1 AUTHOR
 
