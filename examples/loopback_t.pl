@@ -1,5 +1,7 @@
 #!/usr/bin/perl -w
 use strict;
+use threads;
+use threads::shared;
 
 use Fuse;
 use IO::File;
@@ -132,5 +134,5 @@ Fuse::main(
 	read    =>"main::x_read",
 	write   =>"main::x_write",
 	statfs  =>"main::x_statfs",
-	threaded=>0,
+	threaded=>1,
 );

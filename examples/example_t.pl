@@ -1,5 +1,7 @@
 #!/usr/bin/perl -w
 use strict;
+use threads;
+use threads::shared;
 
 use Fuse;
 use POSIX qw(ENOENT EISDIR EINVAL);
@@ -87,5 +89,5 @@ Fuse::main(
 	open   =>"main::e_open",
 	statfs =>"main::e_statfs",
 	read   =>"main::e_read",
-	threaded=>0
+	threaded=>1
 );
