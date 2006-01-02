@@ -1,12 +1,13 @@
-#!/usr/bin/perl -w
-use strict;
+#!/usr/bin/perl
 
+use strict;
 use blib;
 use Fuse;
 use IO::File;
 use POSIX qw(ENOENT ENOSYS EEXIST EPERM O_RDONLY O_RDWR O_APPEND O_CREAT);
 use Fcntl qw(S_ISBLK S_ISCHR S_ISFIFO SEEK_SET);
 require 'syscall.ph'; # for SYS_mknod and SYS_lchown
+use Filesys::Statvfs;
 
 my $tmp_path = "/tmp/fusetest-" . $ENV{LOGNAME};
 if (! -e $tmp_path) {
@@ -69,8 +70,9 @@ sub x_write {
 
 sub err { return (-shift || -$!) }
 
-sub x_readlink { return readlink(fixup(shift));         }
-sub x_unlink   { return unlink(fixup(shift)) ? 0 : -$!; }
+sub x_readlink { return readlink(fixup(shift)                 ); }
+sub x_unlink { return unlink(fixup(shift)) ? 0 : -$!;          }
+sub x_rmdir { return err(rmdir(fixup(shift))               ); }
 
 sub x_symlink { print "symlink\n"; return symlink(shift,fixup(shift)) ? 0 : -$!; }
 
@@ -80,7 +82,13 @@ sub x_rename {
 	my ($err) = rename($old,$new) ? 0 : -ENOENT();
 	return $err;
 }
-sub x_link { return link(fixup(shift),fixup(shift)) ? 0 : -$! }
+sub x_link {
+	my ($from) = shift;
+	my ($to) = shift;
+	print "link $from -> $to\n";
+	my ($err) = link(fixup($from),fixup($to)) ? 0 : -$!;
+	return $err;
+}
 sub x_chown {
 	my ($fn) = fixup(shift);
 	print "nonexistent $fn\n" unless -e $fn;
@@ -115,7 +123,14 @@ sub x_mknod {
 }
 
 # kludge
-sub x_statfs {return 255,1000000,500000,1000000,500000,4096}
+sub x_statfs {
+	my $name = fixup(shift);
+	my($bsize, $frsize, $blocks, $bfree, $bavail,
+		$files, $ffree, $favail, $fsid, $basetype, $flag,
+		$namemax, $fstr) = statvfs("/tmp") || return -$!;
+	return ($namemax, $files, $ffree, $blocks, $bavail, $bsize);
+}
+	
 my ($mountpoint) = "";
 $mountpoint = shift(@ARGV) if @ARGV;
 Fuse::main(
