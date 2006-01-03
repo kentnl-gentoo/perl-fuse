@@ -2,7 +2,7 @@ use ExtUtils::MakeMaker;
 # See lib/ExtUtils/MakeMaker.pm for details of how to influence
 # the contents of the Makefile that is written.
 
-my $inc = `pkg-config --cflags` || '-I ../include';
+my $inc = `pkg-config --cflags` || '-I ../include -D_FILE_OFFSET_BITS=64';
 my $obj = `pkg-config --libs fuse` || '-lfuse';
  
 WriteMakefile(
@@ -19,3 +19,12 @@ WriteMakefile(
 	# Un-comment this if you add C files to link with later:
     'OBJECT'		=> "$obj Fuse.o -lpthread", # link all the C files too
 );
+
+sub MY::postamble {
+    return <<'MAKE_MORE';
+
+sf:
+	svn2cvs.pl file:///home/dpavlin/.svk/fuse/perl-llin :ext:dpavlin@cvs.sourceforge.net:/cvsroot/fuse perl
+
+MAKE_MORE
+};
