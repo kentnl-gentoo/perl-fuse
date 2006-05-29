@@ -27,7 +27,7 @@ static inline void create_perl_context() {
 # define FUSE_CONTEXT_PRE
 # define FUSE_CONTEXT_POST
 #endif
-#include <fuse/fuse.h>
+#include <fuse.h>
 
 #undef DEBUGf
 #if 0
@@ -40,7 +40,7 @@ static inline void create_perl_context() {
 SV *_PLfuse_callbacks[N_CALLBACKS];
 
 int _PLfuse_getattr(const char *file, struct stat *result) {
-	int rv, statcount;
+	int rv;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("getattr begin: %s\n",file);
@@ -71,7 +71,7 @@ int _PLfuse_getattr(const char *file, struct stat *result) {
 		result->st_uid = POPi;
 		result->st_nlink = POPi;
 		result->st_mode = POPi;
-		/*result->st_ino =*/ POPi;
+		result->st_ino   = POPi;
 		result->st_dev = POPi;
 		rv = 0;
 	}
@@ -85,8 +85,6 @@ int _PLfuse_getattr(const char *file, struct stat *result) {
 
 int _PLfuse_readlink(const char *file,char *buf,size_t buflen) {
 	int rv;
-	char *rvstr;
-	I32 ax;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	if(buflen < 1)
@@ -119,6 +117,13 @@ int _PLfuse_readlink(const char *file,char *buf,size_t buflen) {
 	return rv;
 }
 
+#if 0
+/*
+ * This doesn't yet work... we alwas get ENOSYS when trying to use readdir().
+ * Well, of course, getdir() is fine as well.
+ */
+ int _PLfuse_readdir(const char *file, void *dirh, fuse_fill_dir_t dirfil, off_t off, struct fuse_file_info *fi) {
+#endif
 int _PLfuse_getdir(const char *file, fuse_dirh_t dirh, fuse_dirfil_t dirfil) {
 	int prv, rv;
 	FUSE_CONTEXT_PRE;
@@ -134,7 +139,7 @@ int _PLfuse_getdir(const char *file, fuse_dirh_t dirh, fuse_dirfil_t dirfil) {
 	if(prv) {
 		rv = POPi;
 		while(--prv)
-			dirfil(dirh,POPp,0);
+			dirfil(dirh,POPp,0,0);
 	} else {
 		fprintf(stderr,"getdir() handler returned nothing!\n");
 		rv = -ENOSYS;
@@ -149,8 +154,6 @@ int _PLfuse_getdir(const char *file, fuse_dirh_t dirh, fuse_dirfil_t dirfil) {
 
 int _PLfuse_mknod (const char *file, mode_t mode, dev_t dev) {
 	int rv;
-	SV *rvsv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("mknod begin\n");
@@ -177,8 +180,6 @@ int _PLfuse_mknod (const char *file, mode_t mode, dev_t dev) {
 
 int _PLfuse_mkdir (const char *file, mode_t mode) {
 	int rv;
-	SV *rvsv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("mkdir begin\n");
@@ -205,8 +206,6 @@ int _PLfuse_mkdir (const char *file, mode_t mode) {
 
 int _PLfuse_unlink (const char *file) {
 	int rv;
-	SV *rvsv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("unlink begin\n");
@@ -231,8 +230,6 @@ int _PLfuse_unlink (const char *file) {
 
 int _PLfuse_rmdir (const char *file) {
 	int rv;
-	SV *rvsv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("rmdir begin\n");
@@ -257,8 +254,6 @@ int _PLfuse_rmdir (const char *file) {
 
 int _PLfuse_symlink (const char *file, const char *new) {
 	int rv;
-	SV *rvsv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("symlink begin\n");
@@ -284,8 +279,6 @@ int _PLfuse_symlink (const char *file, const char *new) {
 
 int _PLfuse_rename (const char *file, const char *new) {
 	int rv;
-	SV *rvsv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("rename begin\n");
@@ -311,8 +304,6 @@ int _PLfuse_rename (const char *file, const char *new) {
 
 int _PLfuse_link (const char *file, const char *new) {
 	int rv;
-	SV *rvsv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("link begin\n");
@@ -338,8 +329,6 @@ int _PLfuse_link (const char *file, const char *new) {
 
 int _PLfuse_chmod (const char *file, mode_t mode) {
 	int rv;
-	SV *rvsv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("chmod begin\n");
@@ -365,8 +354,6 @@ int _PLfuse_chmod (const char *file, mode_t mode) {
 
 int _PLfuse_chown (const char *file, uid_t uid, gid_t gid) {
 	int rv;
-	SV *rvsv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("chown begin\n");
@@ -393,8 +380,6 @@ int _PLfuse_chown (const char *file, uid_t uid, gid_t gid) {
 
 int _PLfuse_truncate (const char *file, off_t off) {
 	int rv;
-	SV *rvsv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("truncate begin\n");
@@ -420,8 +405,6 @@ int _PLfuse_truncate (const char *file, off_t off) {
 
 int _PLfuse_utime (const char *file, struct utimbuf *uti) {
 	int rv;
-	SV *rvsv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("utime begin\n");
@@ -446,10 +429,9 @@ int _PLfuse_utime (const char *file, struct utimbuf *uti) {
 	return rv;
 }
 
-int _PLfuse_open (const char *file, int flags) {
+int _PLfuse_open (const char *file, struct fuse_file_info *fi) {
 	int rv;
-	SV *rvsv;
-	char *rvstr;
+	int flags = fi->flags;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("open begin\n");
@@ -473,9 +455,8 @@ int _PLfuse_open (const char *file, int flags) {
 	return rv;
 }
 
-int _PLfuse_read (const char *file, char *buf, size_t buflen, off_t off) {
+int _PLfuse_read (const char *file, char *buf, size_t buflen, off_t off, struct fuse_file_info *fi) {
 	int rv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("read begin\n");
@@ -514,9 +495,8 @@ int _PLfuse_read (const char *file, char *buf, size_t buflen, off_t off) {
 	return rv;
 }
 
-int _PLfuse_write (const char *file, const char *buf, size_t buflen, off_t off) {
+int _PLfuse_write (const char *file, const char *buf, size_t buflen, off_t off, struct fuse_file_info *fi) {
 	int rv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("write begin\n");
@@ -541,16 +521,8 @@ int _PLfuse_write (const char *file, const char *buf, size_t buflen, off_t off) 
 	return rv;
 }
 
-/* FIXME check for old fuse API (< 21?) and use statfs here */
-#ifdef __FreeBSD__
- #define _fuse_statvfs statfs
-#else
- #define _fuse_statvfs statvfs
-#endif
-int _PLfuse_statfs (const char *file, struct _fuse_statvfs *st) {
-
+int _PLfuse_statfs (const char *file, struct statvfs *st) {
 	int rv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("statfs begin\n");
@@ -568,14 +540,12 @@ int _PLfuse_statfs (const char *file, struct _fuse_statvfs *st) {
 		st->f_ffree	= POPi;
 		st->f_files	= POPi;
 		st->f_namemax	= POPi;
-#ifndef __FreeBSD__
 		/* zero and fill-in other */
 		st->f_fsid = 0;
 		st->f_frsize = 4096;
 		st->f_flag = 0;
 		st->f_bavail = st->f_bfree;
 		st->f_favail = st->f_ffree;
-#endif
 
 		if(rv == 7)
 			rv = POPi;
@@ -597,9 +567,8 @@ int _PLfuse_statfs (const char *file, struct _fuse_statvfs *st) {
 	return rv;
 }
 
-int _PLfuse_flush (const char *file) {
+int _PLfuse_flush (const char *file, struct fuse_file_info *fi) {
 	int rv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("flush begin\n");
@@ -622,9 +591,9 @@ int _PLfuse_flush (const char *file) {
 	return rv;
 }
 
-int _PLfuse_release (const char *file, int flags) {
+int _PLfuse_release (const char *file, struct fuse_file_info *fi) {
 	int rv;
-	char *rvstr;
+	int flags = fi->flags;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("release begin\n");
@@ -648,9 +617,9 @@ int _PLfuse_release (const char *file, int flags) {
 	return rv;
 }
 
-int _PLfuse_fsync (const char *file, int flags) {
+int _PLfuse_fsync (const char *file, int datasync, struct fuse_file_info *fi) {
 	int rv;
-	char *rvstr;
+	int flags = fi->flags;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("fsync begin\n");
@@ -676,7 +645,6 @@ int _PLfuse_fsync (const char *file, int flags) {
 
 int _PLfuse_setxattr (const char *file, const char *name, const char *buf, size_t buflen, int flags) {
 	int rv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("setxattr begin\n");
@@ -704,7 +672,6 @@ int _PLfuse_setxattr (const char *file, const char *name, const char *buf, size_
 
 int _PLfuse_getxattr (const char *file, const char *name, char *buf, size_t buflen) {
 	int rv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("getxattr begin\n");
@@ -749,7 +716,6 @@ int _PLfuse_getxattr (const char *file, const char *name, char *buf, size_t bufl
 
 int _PLfuse_listxattr (const char *file, char *list, size_t size) {
 	int prv, rv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("listxattr begin\n");
@@ -767,7 +733,6 @@ int _PLfuse_listxattr (const char *file, char *list, size_t size) {
 		char *p = list;
 		int spc = size;
 		int total_len = 0;
-		int i;
 
 		rv = POPi;
 		prv--;
@@ -816,7 +781,6 @@ int _PLfuse_listxattr (const char *file, char *list, size_t size) {
 
 int _PLfuse_removexattr (const char *file, const char *name) {
 	int rv;
-	char *rvstr;
 	FUSE_CONTEXT_PRE;
 	dSP;
 	DEBUGf("removexattr begin\n");
@@ -844,6 +808,9 @@ struct fuse_operations _available_ops = {
 getattr:		_PLfuse_getattr,
 readlink:		_PLfuse_readlink,
 getdir:			_PLfuse_getdir,
+#if 0
+readdir:		_PLfuse_readdir,
+#endif
 mknod:			_PLfuse_mknod,
 mkdir:			_PLfuse_mkdir,
 unlink:			_PLfuse_unlink,
@@ -877,11 +844,11 @@ perl_fuse_main(...)
 	struct fuse_operations fops = 
 		{NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,
 		 NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL,NULL};
-	int i, fd, varnum = 0, debug, threaded, have_mnt;
+	int i, fd, debug, threaded;
 	char *mountpoint;
 	char *mountopts;
-	STRLEN n_a;
-	STRLEN l;
+	struct fuse_args margs = FUSE_ARGS_INIT(0, NULL);
+	struct fuse_args fargs = FUSE_ARGS_INIT(0, NULL);
 	INIT:
 	if(items != 29) {
 		fprintf(stderr,"Perl<->C inconsistency or internal error\n");
@@ -921,11 +888,35 @@ perl_fuse_main(...)
 			      i+4,SvPVbyte_nolen(var));
 		}
 	}
-	/* FIXME: need to pass fusermount arguments */
-	fd = fuse_mount(mountpoint,mountopts);
+	/*
+	 * XXX: What comes here is just a ridiculous use of the option parsing API
+	 * to hack on compatibility with other parts of the new API. First and
+	 * foremost, real C argc/argv would be good to get at...
+	 */
+	if (mountopts &&
+	    (fuse_opt_add_arg(&margs, "") == -1 ||
+	     fuse_opt_add_arg(&margs, "-o") == -1 ||
+	     fuse_opt_add_arg(&margs, mountopts) == -1)) {
+		fuse_opt_free_args(&margs);
+		croak("out of memory\n");
+	}
+	fd = fuse_mount(mountpoint,&margs);
+	fuse_opt_free_args(&margs);        
 	if(fd < 0)
-		croak("could not mount fuse filesystem!");
+		croak("could not mount fuse filesystem!\n");
+        if (debug) {
+		if ( fuse_opt_add_arg(&fargs, "") == -1 ||
+			fuse_opt_add_arg(&fargs, "-d") == -1) {
+			fuse_opt_free_args(&fargs);
+			croak("out of memory\n");
+		}
+	} else {
+		if (fuse_opt_add_arg(&fargs, "") == -1)
+			croak("out of memory\n");
+	}
+
 	if(threaded) {
-		fuse_loop_mt(fuse_new(fd,debug ? "debug" : NULL,&fops));
+		fuse_loop_mt(fuse_new(fd,&fargs,&fops,sizeof(fops)));
 	} else
-		fuse_loop(fuse_new(fd,debug ? "debug" : NULL,&fops));
+		fuse_loop(fuse_new(fd,&fargs,&fops,sizeof(fops)));
+	fuse_opt_free_args(&fargs);
