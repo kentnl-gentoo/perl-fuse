@@ -6,6 +6,12 @@ my $ver = `fusermount -V`;
 my $ver2 = `mount_fusefs -V`;
 $ver =~ s/^.*?version:\s+//;
 $ver2 =~ s/^.*?version:\s+//;
+if (! $ver && ! $ver2) {
+	# make CPANPLUS happy and don't report errors if fuse isn't installed
+	die("No support for os: $^O\n",
+		"You need to have fuse-dev (or similar) package installed and have sufficient permissions in order to install this module\n"
+	);
+}
 if ($ver && $ver + 0 < 2.5) {
 	die "Fuse perl bindings need Linux fuse version 2.5 or never\n";
 } elsif ($ver2 && $ver2 + 0 < 0.3) {
@@ -36,7 +42,7 @@ sub MY::postamble {
 	return <<'MAKE_MORE';
 
 sf:
-	svn2cvs.pl file:///home/dpavlin/.svk/fuse/perl-llin :ext:dpavlin@cvs.sourceforge.net:/cvsroot/fuse perl
+	svn2cvs.pl file:///home/dpavlin/private/svn/fuse/perl-llin :ext:dpavlin@fuse.cvs.sourceforge.net:/cvsroot/fuse perl
 
 MAKE_MORE
 };
