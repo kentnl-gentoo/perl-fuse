@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:                Fuse
-version:             0.09_2
+version:             0.09_3
 abstract:            write filesystems in Perl using FUSE
 license:             ~
 generated_by:        ExtUtils::MakeMaker version 6.36
