@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               Fuse
-version:            0.09_4
+version:            0.10_1
 abstract:           write filesystems in Perl using FUSE
 author:
     - Mark Glines <mark@glines.org>
@@ -18,7 +18,7 @@ no_index:
     directory:
         - t
         - inc
-generated_by:       ExtUtils::MakeMaker version 6.55_02
+generated_by:       ExtUtils::MakeMaker version 6.56
 meta-spec:
     url:      http://module-build.sourceforge.net/META-spec-v1.4.html
     version:  1.4
