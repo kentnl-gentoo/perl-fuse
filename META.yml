@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               Fuse
-version:            0.10_1
+version:            0.11
 abstract:           write filesystems in Perl using FUSE
 author:
     - Mark Glines <mark@glines.org>

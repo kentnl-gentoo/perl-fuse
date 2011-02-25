@@ -28,7 +28,7 @@ our %EXPORT_TAGS = (
 our @EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } );
 
 our @EXPORT = ();
-our $VERSION = '0.10_1';
+our $VERSION = '0.11';
 
 sub AUTOLOAD {
     # This AUTOLOAD is used to 'autoload' constants from the constant()
@@ -77,7 +77,7 @@ bootstrap Fuse $VERSION;
 sub main {
 	my @names = qw(getattr readlink getdir mknod mkdir unlink rmdir symlink
 			rename link chmod chown truncate utime open read write statfs
-			flush release fsync setxattr getxattr listxattr removexattr);
+			flush release fsync setxattr getxattr listxattr removexattr opendir readdir releasedir fsyncdir);
 	my @subs = map {undef} @names;
 	my $tmp = 0;
 	my %mapping = map { $_ => $tmp++ } @names;
@@ -291,6 +291,11 @@ Returns a list: 0 or more text strings (the filenames), followed by a numeric er
 This is used to obtain directory listings.  It's opendir(), readdir(), filldir() and closedir() all in one call.
 
 example rv: return ('.', 'a', 'b', 0);
+
+=head3 readdir
+
+Arguments: Directory name, offset
+Returns: filename, offset to the next dirent, numeric errno 0 or -ENOENT()
 
 =head3 mknod
 
