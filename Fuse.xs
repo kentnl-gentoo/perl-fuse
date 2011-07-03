@@ -3,8 +3,14 @@
 #include "perl.h"
 #include "XSUB.h"
 
-#include <sys/xattr.h>
 #include <fuse.h>
+
+#if defined(__FreeBSD__) || defined(__NetBSD__)
+# define XATTR_CREATE 1
+# define XATTR_REPLACE 2
+#else
+# include <sys/xattr.h>
+#endif
 
 /* Determine if threads support should be included */
 #ifdef USE_ITHREADS
@@ -33,9 +39,13 @@
 typedef struct {
 	SV *callback[N_CALLBACKS];
 	HV *handles;
+#ifdef USE_ITHREADS
 	tTHX self;
+#endif
 	int threaded;
+#ifdef USE_ITHREADS
 	perl_mutex mutex;
+#endif
 } my_cxt_t;
 START_MY_CXT;
 
@@ -727,7 +737,11 @@ int _PLfuse_fsync (const char *file, int datasync, struct fuse_file_info *fi) {
 	return rv;
 }
 
+#if __FreeBSD__ >= 10
+int _PLfuse_setxattr (const char *file, const char *name, const char *buf, size_t buflen, int flags, uint32_t position) {
+#else
 int _PLfuse_setxattr (const char *file, const char *name, const char *buf, size_t buflen, int flags) {
+#endif
 	int rv;
 	FUSE_CONTEXT_PRE;
 	DEBUGf("setxattr begin\n");
@@ -750,7 +764,11 @@ int _PLfuse_setxattr (const char *file, const char *name, const char *buf, size_
 	return rv;
 }
 
+#if __FreeBSD__ >= 10
+int _PLfuse_getxattr (const char *file, const char *name, char *buf, size_t buflen, uint32_t position) {
+#else
 int _PLfuse_getxattr (const char *file, const char *name, char *buf, size_t buflen) {
+#endif
 	int rv;
 	FUSE_CONTEXT_PRE;
 	DEBUGf("getxattr begin\n");
@@ -1506,14 +1524,19 @@ PROTOTYPES: DISABLE
 
 BOOT:
 	MY_CXT_INIT;
+#ifdef USE_ITHREADS
 	MY_CXT.self = aTHX;
+#endif
 
 void
 CLONE(...)
 	PREINIT:
+#ifdef USE_ITHREADS
 		int i;
 		dTHX;
+#endif
 	CODE:
+#ifdef USE_ITHREADS
 		MY_CXT_CLONE;
 		tTHX parent = MY_CXT.self;
 		MY_CXT.self = my_perl;
@@ -1545,6 +1568,7 @@ CLONE(...)
 			clone_params_del(clone_param);
 #endif
 		}
+#endif
 
 SV*
 fuse_get_context()
@@ -1576,6 +1600,7 @@ fuse_version()
 	OUTPUT:
 	RETVAL
 
+#ifndef __FreeBSD__
 SV *
 XATTR_CREATE()
 	CODE:
@@ -1589,6 +1614,8 @@ XATTR_REPLACE()
 	RETVAL = newSViv(XATTR_REPLACE);
 	OUTPUT:
 	RETVAL
+
+#endif
 
 void
 perl_fuse_main(...)
