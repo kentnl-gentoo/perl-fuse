@@ -1,6 +1,6 @@
 --- #YAML:1.0
 name:               Fuse
-version:            0.13
+version:            0.14
 abstract:           write filesystems in Perl using FUSE
 author:
     - Mark Glines <mark@glines.org>
@@ -10,7 +10,10 @@ configure_requires:
     ExtUtils::MakeMaker:  0
 build_requires:
     ExtUtils::MakeMaker:  0
-requires:  {}
+requires:
+    Filesys::Statvfs:  0
+    Lchown:            0
+    Unix::Mknod:       0
 resources:
     bugtracker:  https://rt.cpan.org/Public/Dist/Display.html?Name=Fuse
     repository:  http://github.com/dpavlin/perl-fuse

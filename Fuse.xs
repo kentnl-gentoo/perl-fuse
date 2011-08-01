@@ -16,6 +16,14 @@
 #ifdef USE_ITHREADS
 # ifdef I_PTHREAD
 #  define FUSE_USE_ITHREADS
+#  if (PERL_VERSION < 8) || (PERL_VERSION == 8 && PERL_SUBVERSION < 9)
+#    define tTHX PerlInterpreter*
+#    define STR_WITH_LEN(s)  ("" s ""), (sizeof(s)-1)
+#    define hv_fetchs(hv,key,lval) Perl_hv_fetch(aTHX_ hv, STR_WITH_LEN(key), lval)
+#    define dMY_CXT_INTERP(interp) \
+	SV *my_cxt_sv = *hv_fetchs(interp->Imodglobal, MY_CXT_KEY, TRUE); \
+	my_cxt_t *my_cxtp = INT2PTR(my_cxt_t*, SvUV(my_cxt_sv))
+#  endif
 # else
 #  warning "Sorry, I don't know how to handle ithreads on this architecture. Building non-threaded version"
 # endif
@@ -54,6 +62,9 @@ tTHX master_interp = NULL;
 
 #define CLONE_INTERP(parent) S_clone_interp(parent)
 tTHX S_clone_interp(tTHX parent) {
+#  if (PERL_VERSION < 10)
+	tTHX my_perl = parent;
+#endif
 	dMY_CXT_INTERP(parent);
 	if(MY_CXT.threaded) {
 		MUTEX_LOCK(&MY_CXT.mutex);
@@ -1552,7 +1563,7 @@ CLONE(...)
 		{
 			CLONE_PARAMS *clone_param;
 #if (PERL_VERSION > 13) || (PERL_VERSION == 13 && PERL_SUBVERSION >= 2)
-			clone_param = clone_params_new(parent, aTHX);
+			clone_param = Perl_clone_params_new(parent, aTHX);
 #else
 			CLONE_PARAMS raw_param;
 			raw_param.flags = 0;
@@ -1565,7 +1576,7 @@ CLONE(...)
 			}
 			MY_CXT.handles = (HV*)sv_dup((SV*)MY_CXT.handles, clone_param);
 #if (PERL_VERSION > 13) || (PERL_VERSION == 13 && PERL_SUBVERSION >= 2)
-			clone_params_del(clone_param);
+			Perl_clone_params_del(clone_param);
 #endif
 		}
 #endif

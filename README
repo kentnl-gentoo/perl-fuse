@@ -12,8 +12,6 @@ database as file system, but there will be more.
 This is a pre-production release.  It seems to work quite well.  In fact, I
 can't find any problems with it whatsoever.  If you do, I want to know.
 
-Support for FreeBSD is experimental, so expect tests to fail.
-
 INSTALLATION
 
 To install this module type the standard commands as root:
@@ -80,13 +78,12 @@ unmount infrastructure is a crock.  I am not pleased with that code.
 
 While most things work, I do still have a TODO list:
 * need to sort out cleaner mount semantics for the test framework
-* determine why getattr() test on OS X/Darwin is very slow; succeeds, but
-  very slowly
 
 Currently tests have been attempted and succeeded on:
   * Ubuntu 10.10/amd64
   * Ubuntu 11.04/amd64
   * Debian 5.0/powerpc
+  * CentOS 5.6/amd64
   * NetBSD 5.1/i386
   * NetBSD 5.1/amd64
   * FreeBSD 8.2/i386
@@ -100,3 +97,6 @@ which correct the issues that cause the test failures. However, there is
 still a bug in librefuse that causes readdir() to only be called once.
 We will be addressing this with the appropriate developers in the near
 future.
+
+Also note that on NetBSD and FreeBSD, extended attributes do not work. These
+are specifics related to the FUSE implementations on those platforms.
