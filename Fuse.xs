@@ -5,12 +5,46 @@
 
 #include <fuse.h>
 
-#if defined(__FreeBSD__) || defined(__NetBSD__)
+#if (defined(__FreeBSD__) && !defined(__APPLE__)) || defined(__NetBSD__)
 # define XATTR_CREATE 1
 # define XATTR_REPLACE 2
 #else
 # include <sys/xattr.h>
 #endif
+
+#if defined(__linux__)
+# define STAT_SEC(st, st_xtim) ((st)->st_xtim.tv_sec)
+# define STAT_NSEC(st, st_xtim) ((st)->st_xtim.tv_nsec)
+#else
+# define STAT_SEC(st, st_xtim) ((st)->st_xtim##espec.tv_sec)
+# define STAT_NSEC(st, st_xtim) ((st)->st_xtim##espec.tv_nsec)
+#endif
+
+/* Implement a macro to handle multiple formats (integer, float, and array
+ * containing seconds and nanoseconds). */
+#define PULL_TIME(st, st_xtim, svp)					\
+{									\
+	SV *sv = svp;							\
+	if (SvROK(sv)) {						\
+		AV *av = (AV *)SvRV(sv);				\
+		if (SvTYPE((SV *)av) != SVt_PVAV) {			\
+			Perl_croak_nocontext("Reference was not array ref"); \
+		}							\
+		if (av_len(av) != 1) {					\
+			Perl_croak_nocontext("Array of incorrect dimension"); \
+		}							\
+		STAT_SEC(st, st_xtim) = SvIV(*(av_fetch(av, 0, FALSE))); \
+		STAT_NSEC(st, st_xtim) = SvIV(*(av_fetch(av, 1, FALSE))); \
+	}								\
+	else if (SvNOK(sv) || SvIOK(sv) || SvPOK(sv)) {			\
+		double tm = SvNV(sv);					\
+		STAT_SEC(st, st_xtim) = (int)tm;			\
+		STAT_NSEC(st, st_xtim) = (tm - (int)tm) * 1000000000;	\
+	}								\
+	else {								\
+		Perl_croak_nocontext("Invalid data type passed");	\
+	}								\
+}
 
 /* Determine if threads support should be included */
 #ifdef USE_ITHREADS
@@ -32,16 +66,10 @@
 /* Global Data */
 
 #define MY_CXT_KEY "Fuse::_guts" XS_VERSION
-/* #if FUSE_VERSION >= 28
-# define N_CALLBACKS 41 */
-#if FUSE_VERSION >= 26
-# define N_CALLBACKS 38
-#elif FUSE_VERSION >= 25
-# define N_CALLBACKS 35
-#elif FUSE_VERSION >= 23
-# define N_CALLBACKS 31
+#if FUSE_VERSION >= 28
+# define N_CALLBACKS 41
 #else
-# define N_CALLBACKS 25
+# define N_CALLBACKS 38
 #endif
 
 typedef struct {
@@ -54,6 +82,7 @@ typedef struct {
 #ifdef USE_ITHREADS
 	perl_mutex mutex;
 #endif
+	int utimens_as_array;
 } my_cxt_t;
 START_MY_CXT;
 
@@ -71,9 +100,9 @@ tTHX S_clone_interp(tTHX parent) {
 		PERL_SET_CONTEXT(parent);
 		dTHX;
 #if (PERL_VERSION > 10) || (PERL_VERSION == 10 && PERL_SUBVERSION >= 1)
-		tTHX child = perl_clone(parent, CLONEf_CLONE_HOST);
+		tTHX child = perl_clone(parent, CLONEf_CLONE_HOST | CLONEf_COPY_STACKS);
 #else
-		tTHX child = perl_clone(parent, CLONEf_CLONE_HOST | CLONEf_KEEP_PTR_TABLE);
+		tTHX child = perl_clone(parent, CLONEf_CLONE_HOST | CLONEf_COPY_STACKS | CLONEf_KEEP_PTR_TABLE);
 		ptr_table_free(PL_ptr_table);
 		PL_ptr_table = NULL;
 #endif
@@ -129,8 +158,10 @@ void S_fh_store_handle(pTHX_ pMY_CXT_ struct fuse_file_info *fi, SV *sv) {
 			SvSHARE(sv);
 		}
 #endif
-		MAGIC *mg = (SvTYPE(sv) == SVt_PVMG) ? mg_find(sv, PERL_MAGIC_shared_scalar) : NULL;
-		fi->fh = mg ? PTR2IV(mg->mg_ptr) : PTR2IV(sv);
+        /* This seems to be screwing things up... */
+		// MAGIC *mg = (SvTYPE(sv) == SVt_PVMG) ? mg_find(sv, PERL_MAGIC_shared_scalar) : NULL;
+		// fi->fh = mg ? PTR2IV(mg->mg_ptr) : PTR2IV(sv);
+		fi->fh = PTR2IV(sv);
 		if(hv_store_ent(MY_CXT.handles, FH_KEY(fi), SvREFCNT_inc(sv), 0) == NULL) {
 			SvREFCNT_dec(sv);
 		}
@@ -160,9 +191,9 @@ int _PLfuse_getattr(const char *file, struct stat *result) {
 	} else {
 		result->st_blocks = POPi;
 		result->st_blksize = POPi;
-		result->st_ctime = POPi;
-		result->st_mtime = POPi;
-		result->st_atime = POPi;
+		PULL_TIME(result, st_ctim, POPs);
+		PULL_TIME(result, st_mtim, POPs);
+		PULL_TIME(result, st_atim, POPs);
 		result->st_size = POPn;	// we pop double here to support files larger than 4Gb (long limit)
 		result->st_rdev = POPi;
 		result->st_gid = POPi;
@@ -289,7 +320,6 @@ int _PLfuse_mkdir (const char *file, mode_t mode) {
 	FUSE_CONTEXT_POST;
 	return rv;
 }
-
 
 int _PLfuse_unlink (const char *file) {
 	int rv;
@@ -506,11 +536,9 @@ int _PLfuse_open (const char *file, struct fuse_file_info *fi) {
 	 */
 	fi->fh = 0; /* Ensure it starts with 0 - important if they don't set it */
 	fihash = newHV();
-#if FUSE_VERSION >= 24
 	(void) hv_store(fihash, "direct_io",    9, newSViv(fi->direct_io),   0);
 	(void) hv_store(fihash, "keep_cache",  10, newSViv(fi->keep_cache),  0);
-#endif
-#if FUSE_VERSION >= 29
+#if FUSE_VERSION >= 28
 	(void) hv_store(fihash, "nonseekable", 11, newSViv(fi->nonseekable), 0);
 #endif
 	XPUSHs(sv_2mortal(newRV_noinc((SV*) fihash)));
@@ -531,14 +559,12 @@ int _PLfuse_open (const char *file, struct fuse_file_info *fi) {
 	if (rv == 0)
 	{
 		/* Success, so copy the file handle which they returned */
-#if FUSE_VERSION >= 24
 		SV **svp;
 		if ((svp = hv_fetch(fihash, "direct_io",    9, 0)) != NULL)
 			fi->direct_io   = SvIV(*svp);
 		if ((svp = hv_fetch(fihash, "keep_cache",  10, 0)) != NULL)
 			fi->keep_cache  = SvIV(*svp);
-#endif
-#if FUSE_VERSION >= 29
+#if FUSE_VERSION >= 28
 		if ((svp = hv_fetch(fihash, "nonseekable", 11, 0)) != NULL)
  			fi->nonseekable = SvIV(*svp);
 #endif
@@ -655,8 +681,8 @@ int _PLfuse_statfs (const char *file, struct statvfs *st) {
 		st->f_namemax	= POPi;
 		/* zero and fill-in other */
 		st->f_fsid = 0;
-		st->f_frsize = 4096;
 		st->f_flag = 0;
+		st->f_frsize = st->f_bsize;
 		st->f_bavail = st->f_bfree;
 		st->f_favail = st->f_ffree;
 
@@ -748,7 +774,7 @@ int _PLfuse_fsync (const char *file, int datasync, struct fuse_file_info *fi) {
 	return rv;
 }
 
-#if __FreeBSD__ >= 10
+#ifdef __APPLE__
 int _PLfuse_setxattr (const char *file, const char *name, const char *buf, size_t buflen, int flags, uint32_t position) {
 #else
 int _PLfuse_setxattr (const char *file, const char *name, const char *buf, size_t buflen, int flags) {
@@ -775,7 +801,7 @@ int _PLfuse_setxattr (const char *file, const char *name, const char *buf, size_
 	return rv;
 }
 
-#if __FreeBSD__ >= 10
+#ifdef __APPLE__
 int _PLfuse_getxattr (const char *file, const char *name, char *buf, size_t buflen, uint32_t position) {
 #else
 int _PLfuse_getxattr (const char *file, const char *name, char *buf, size_t buflen) {
@@ -907,7 +933,6 @@ int _PLfuse_removexattr (const char *file, const char *name) {
 	return rv;
 }
 
-#if FUSE_VERSION >= 23
 int _PLfuse_opendir(const char *file, struct fuse_file_info *fi) {
 	int rv;
 	FUSE_CONTEXT_PRE;
@@ -933,7 +958,6 @@ int _PLfuse_opendir(const char *file, struct fuse_file_info *fi) {
 	DEBUGf("opendir end: %i\n",rv);
 	FUSE_CONTEXT_POST;
 	return rv;
-
 }
 
 int _PLfuse_readdir(const char *file, void *dirh, fuse_fill_dir_t dirfil,
@@ -985,8 +1009,8 @@ int _PLfuse_readdir(const char *file, void *dirh, fuse_fill_dir_t dirfil,
 					 * enumeration process... */
 					svp = av_fetch(av, 2, FALSE);
 					if (SvROK(*svp) &&
-							SvTYPE(av2 = (AV *)SvRV(*svp)) == SVt_PVAV &&
-							av_len(av2) == 12) {
+					    SvTYPE(av2 = (AV *)SvRV(*svp)) == SVt_PVAV &&
+					    av_len(av2) == 12) {
 						st.st_dev     = SvIV(*(av_fetch(av2,  0, FALSE)));
 						st.st_ino     = SvIV(*(av_fetch(av2,  1, FALSE)));
 						st.st_mode    = SvIV(*(av_fetch(av2,  2, FALSE)));
@@ -995,9 +1019,9 @@ int _PLfuse_readdir(const char *file, void *dirh, fuse_fill_dir_t dirfil,
 						st.st_gid     = SvIV(*(av_fetch(av2,  5, FALSE)));
 						st.st_rdev    = SvIV(*(av_fetch(av2,  6, FALSE)));
 						st.st_size    = SvNV(*(av_fetch(av2,  7, FALSE)));
-						st.st_atime   = SvIV(*(av_fetch(av2,  8, FALSE)));
-						st.st_mtime   = SvIV(*(av_fetch(av2,  9, FALSE)));
-						st.st_ctime   = SvIV(*(av_fetch(av2, 10, FALSE)));
+						PULL_TIME(&st, st_atim, *(av_fetch(av2,  8, FALSE)));
+						PULL_TIME(&st, st_mtim, *(av_fetch(av2,  9, FALSE)));
+						PULL_TIME(&st, st_ctim, *(av_fetch(av2, 10, FALSE)));
 						st.st_blksize = SvIV(*(av_fetch(av2, 11, FALSE)));
 						st.st_blocks  = SvIV(*(av_fetch(av2, 12, FALSE)));
 						st_filled = 1;
@@ -1077,11 +1101,7 @@ int _PLfuse_fsyncdir(const char *file, int datasync,
 	return rv;
 }
 
-#if FUSE_VERSION >= 26
 void *_PLfuse_init(struct fuse_conn_info *fc)
-#else /* FUSE_VERSION < 26 */
-void *_PLfuse_init(void)
-#endif /* FUSE_VERSION >= 26 */
 {
 	void *rv = NULL;
 	int prv;
@@ -1126,9 +1146,7 @@ void _PLfuse_destroy(void *private_data) {
 	DEBUGf("init end\n");
 	FUSE_CONTEXT_POST;
 }
-#endif /* FUSE_VERSION >= 23 */
 
-#if FUSE_VERSION >= 25
 int _PLfuse_access(const char *file, int mask) {
 	int rv;
 	FUSE_CONTEXT_PRE;
@@ -1168,7 +1186,7 @@ int _PLfuse_create(const char *file, mode_t mode, struct fuse_file_info *fi) {
 	fihash = newHV();
 	(void) hv_store(fihash, "direct_io",    9, newSViv(fi->direct_io),   0);
 	(void) hv_store(fihash, "keep_cache",  10, newSViv(fi->keep_cache),  0);
-#if FUSE_VERSION >= 29
+#if FUSE_VERSION >= 28
 	(void) hv_store(fihash, "nonseekable", 11, newSViv(fi->nonseekable), 0);
 #endif
 	XPUSHs(sv_2mortal(newRV_noinc((SV*) fihash)));
@@ -1194,7 +1212,7 @@ int _PLfuse_create(const char *file, mode_t mode, struct fuse_file_info *fi) {
 			fi->direct_io   = SvIV(*svp);
 		if ((svp = hv_fetch(fihash, "keep_cache",  10, 0)) != NULL)
 			fi->keep_cache  = SvIV(*svp);
-#if FUSE_VERSION >= 29
+#if FUSE_VERSION >= 28
 		if ((svp = hv_fetch(fihash, "nonseekable", 11, 0)) != NULL)
 			fi->nonseekable = SvIV(*svp);
 #endif
@@ -1263,9 +1281,9 @@ int _PLfuse_fgetattr(const char *file, struct stat *result,
 	} else {
 		result->st_blocks = POPi;
 		result->st_blksize = POPi;
-		result->st_ctime = POPi;
-		result->st_mtime = POPi;
-		result->st_atime = POPi;
+		PULL_TIME(result, st_ctim, POPs);
+		PULL_TIME(result, st_mtim, POPs);
+		PULL_TIME(result, st_atim, POPs);
 		result->st_size = POPn;	// we pop double here to support files larger than 4Gb (long limit)
 		result->st_rdev = POPi;
 		result->st_gid = POPi;
@@ -1283,9 +1301,7 @@ int _PLfuse_fgetattr(const char *file, struct stat *result,
 	FUSE_CONTEXT_POST;
 	return rv;
 }
-#endif /* FUSE_VERSION >= 25 */
 
-#if FUSE_VERSION >= 26
 int _PLfuse_lock(const char *file, struct fuse_file_info *fi, int cmd,
                  struct flock *lockinfo) {
 	int rv;
@@ -1363,8 +1379,30 @@ int _PLfuse_utimens(const char *file, const struct timespec tv[2]) {
 	SAVETMPS;
 	PUSHMARK(SP);
 	XPUSHs(sv_2mortal(newSVpv(file,0)));
-	XPUSHs(tv ? sv_2mortal(newSVnv(tv[0].tv_sec + (tv[0].tv_nsec / 1000000000.0))) : &PL_sv_undef);
-	XPUSHs(tv ? sv_2mortal(newSVnv(tv[1].tv_sec + (tv[1].tv_nsec / 1000000000.0))) : &PL_sv_undef);
+	if (MY_CXT.utimens_as_array) {
+		/* Pushing timespecs as 2-element arrays (if tv is present). */
+		AV *av;
+		if (tv) {
+			av = newAV();
+			av_push(av, newSViv(tv[0].tv_sec));
+			av_push(av, newSViv(tv[0].tv_nsec));
+			XPUSHs(sv_2mortal(newRV_noinc((SV *)av)));
+			av = newAV();
+			av_push(av, newSViv(tv[1].tv_sec));
+			av_push(av, newSViv(tv[1].tv_nsec));
+			XPUSHs(sv_2mortal(newRV_noinc((SV *)av)));
+		}
+		else {
+			XPUSHs(&PL_sv_undef);
+			XPUSHs(&PL_sv_undef);
+		}
+
+	}
+	else {
+		/* Pushing timespecs as floating point (double) values. */
+		XPUSHs(tv ? sv_2mortal(newSVnv(tv[0].tv_sec + (tv[0].tv_nsec / 1000000000.0))) : &PL_sv_undef);
+		XPUSHs(tv ? sv_2mortal(newSVnv(tv[1].tv_sec + (tv[1].tv_nsec / 1000000000.0))) : &PL_sv_undef);
+	}
 	PUTBACK;
 	rv = call_sv(MY_CXT.callback[36],G_SCALAR);
 	SPAGAIN;
@@ -1416,22 +1454,29 @@ int _PLfuse_bmap(const char *file, size_t blocksize, uint64_t *idx) {
 	FUSE_CONTEXT_POST;
 	return rv;
 }
-#endif /* FUSE_VERSION >= 26 */
 
-#if 0
 #if FUSE_VERSION >= 28
+
+# ifndef __linux__
+#  define _IOC_SIZE(n) IOCPARM_LEN(n)
+# endif
+
 int _PLfuse_ioctl(const char *file, int cmd, void *arg,
                   struct fuse_file_info *fi, unsigned int flags, void *data) {
 	int rv;
+	SV *sv = NULL;
 	FUSE_CONTEXT_PRE;
 	DEBUGf("ioctl begin\n");
 	ENTER;
 	SAVETMPS;
 	PUSHMARK(SP);
 	XPUSHs(sv_2mortal(newSVpv(file,0)));
-	XPUSHs(sv_2mortal(newSViv(cmd)));
+	/* I don't know why cmd is a signed int in the first place;
+	 * casting as unsigned so stupid tricks don't have to be done on
+	 * the perl side */
+	XPUSHs(sv_2mortal(newSVuv((unsigned int)cmd)));
 	XPUSHs(sv_2mortal(newSViv(flags)));
-	if (_IOC_DIR(cmd) & _IOC_READ)
+	if (cmd & IOC_IN)
 		XPUSHs(sv_2mortal(newSVpvn(data, _IOC_SIZE(cmd))));
 	else
 		XPUSHs(&PL_sv_undef);
@@ -1439,11 +1484,19 @@ int _PLfuse_ioctl(const char *file, int cmd, void *arg,
 	PUTBACK;
 	rv = call_sv(MY_CXT.callback[39],G_ARRAY);
 	SPAGAIN;
-	if (_IOC_DIR(cmd) & _IOC_WRITE) {
-		if (rv == 2) {
-			SV *sv = POPs;
-			unsigned int len;
+	if ((cmd & IOC_OUT) && (rv == 2)) {
+		sv = POPs;
+		rv--;
+	}
+
+	if (rv > 0)
+		rv = POPi;
+
+	if ((cmd & IOC_OUT) && !rv) {
+		if (sv) {
+			size_t len;
 			char *rdata = SvPV(sv, len);
+
 			if (len > _IOC_SIZE(cmd)) {
 				fprintf(stderr, "ioctl(): returned data was too large for data area\n");
 				rv = -EFBIG;
@@ -1452,16 +1505,12 @@ int _PLfuse_ioctl(const char *file, int cmd, void *arg,
 				memset(data, 0, _IOC_SIZE(cmd));
 				memcpy(data, rdata, len);
 			}
-
-			rv--;
 		}
 		else {
-			fprintf(stderr, "ioctl(): ioctl was a write op, but no data was returned from call?\n");
+			fprintf(stderr, "ioctl(): ioctl was a read op, but no data was returned from call?\n");
 			rv = -EFAULT;
 		}
 	}
-	if (rv > 0)
-		rv = POPi;
 	FREETMPS;
 	LEAVE;
 	PUTBACK;
@@ -1472,62 +1521,85 @@ int _PLfuse_ioctl(const char *file, int cmd, void *arg,
 
 int _PLfuse_poll(const char *file, struct fuse_file_info *fi,
                  struct fuse_pollhandle *ph, unsigned *reventsp) {
-
+	int rv;
+	SV *sv = NULL;
+	FUSE_CONTEXT_PRE;
+	DEBUGf("poll begin\n");
+	ENTER;
+	SAVETMPS;
+	PUSHMARK(SP);
+	XPUSHs(sv_2mortal(newSVpv(file,0)));
+	if (ph) {
+		/* Still gotta figure out how to do this right... */
+		sv = newSViv(PTR2IV(ph));
+		SvREADONLY_on(sv);
+		SvSHARE(sv);
+		XPUSHs(sv);
+	}
+	else
+		XPUSHs(&PL_sv_undef);
+	XPUSHs(sv_2mortal(newSViv(*reventsp)));
+	XPUSHs(FH_GETHANDLE(fi));
+	PUTBACK;
+	rv = call_sv(MY_CXT.callback[40],G_ARRAY);
+	SPAGAIN;
+	if (rv > 1) {
+		*reventsp = POPi;
+		rv--;
+	}
+	rv = (rv ? POPi : 0);
+	FREETMPS;
+	LEAVE;
+	PUTBACK;
+	DEBUGf("poll end: %i\n", rv);
+	FUSE_CONTEXT_POST;
+	return rv;
 }
 #endif /* FUSE_VERSION >= 28 */
-#endif
 
 struct fuse_operations _available_ops = {
-getattr:		_PLfuse_getattr,
-readlink:		_PLfuse_readlink,
-getdir:			_PLfuse_getdir,
-mknod:			_PLfuse_mknod,
-mkdir:			_PLfuse_mkdir,
-unlink:			_PLfuse_unlink,
-rmdir:			_PLfuse_rmdir,
-symlink:		_PLfuse_symlink,
-rename:			_PLfuse_rename,
-link:			_PLfuse_link,
-chmod:			_PLfuse_chmod,
-chown:			_PLfuse_chown,
-truncate:		_PLfuse_truncate,
-utime:			_PLfuse_utime,
-open:			_PLfuse_open,
-read:			_PLfuse_read,
-write:			_PLfuse_write,
-statfs:			_PLfuse_statfs,
-flush:			_PLfuse_flush,
-release:		_PLfuse_release,
-fsync:			_PLfuse_fsync,
-setxattr:		_PLfuse_setxattr,
-getxattr:		_PLfuse_getxattr,
-listxattr:		_PLfuse_listxattr,
-removexattr:		_PLfuse_removexattr,
-#if FUSE_VERSION >= 23
-opendir:		_PLfuse_opendir, 
-readdir:		_PLfuse_readdir,
-releasedir:		_PLfuse_releasedir,
-fsyncdir:		_PLfuse_fsyncdir,
-init:			_PLfuse_init,
-destroy:		_PLfuse_destroy,
-#endif /* FUSE_VERSION >= 23 */
-#if FUSE_VERSION >= 25
-access:			_PLfuse_access,
-create:			_PLfuse_create,
-ftruncate:		_PLfuse_ftruncate,
-fgetattr:		_PLfuse_fgetattr,
-#endif /* FUSE_VERSION >= 25 */
-#if FUSE_VERSION >= 26
-lock:			_PLfuse_lock,
-utimens:		_PLfuse_utimens,
-bmap:			_PLfuse_bmap,
-#endif /* FUSE_VERSION >= 26 */
-#if 0
+.getattr		= _PLfuse_getattr,
+.readlink		= _PLfuse_readlink,
+.getdir			= _PLfuse_getdir,
+.mknod			= _PLfuse_mknod,
+.mkdir			= _PLfuse_mkdir,
+.unlink			= _PLfuse_unlink,
+.rmdir			= _PLfuse_rmdir,
+.symlink		= _PLfuse_symlink,
+.rename			= _PLfuse_rename,
+.link			= _PLfuse_link,
+.chmod			= _PLfuse_chmod,
+.chown			= _PLfuse_chown,
+.truncate		= _PLfuse_truncate,
+.utime			= _PLfuse_utime,
+.open			= _PLfuse_open,
+.read			= _PLfuse_read,
+.write			= _PLfuse_write,
+.statfs			= _PLfuse_statfs,
+.flush			= _PLfuse_flush,
+.release		= _PLfuse_release,
+.fsync			= _PLfuse_fsync,
+.setxattr		= _PLfuse_setxattr,
+.getxattr		= _PLfuse_getxattr,
+.listxattr		= _PLfuse_listxattr,
+.removexattr		= _PLfuse_removexattr,
+.opendir		= _PLfuse_opendir, 
+.readdir		= _PLfuse_readdir,
+.releasedir		= _PLfuse_releasedir,
+.fsyncdir		= _PLfuse_fsyncdir,
+.init			= _PLfuse_init,
+.destroy		= _PLfuse_destroy,
+.access			= _PLfuse_access,
+.create			= _PLfuse_create,
+.ftruncate		= _PLfuse_ftruncate,
+.fgetattr		= _PLfuse_fgetattr,
+.lock			= _PLfuse_lock,
+.utimens		= _PLfuse_utimens,
+.bmap			= _PLfuse_bmap,
 #if FUSE_VERSION >= 28
-ioctl:			_PLfuse_ioctl,
-poll:			_PLfuse_poll,
+.ioctl			= _PLfuse_ioctl,
+.poll			= _PLfuse_poll,
 #endif /* FUSE_VERSION >= 28 */
-#endif
 };
 
 MODULE = Fuse		PACKAGE = Fuse
@@ -1611,7 +1683,6 @@ fuse_version()
 	OUTPUT:
 	RETVAL
 
-#ifndef __FreeBSD__
 SV *
 XATTR_CREATE()
 	CODE:
@@ -1626,8 +1697,6 @@ XATTR_REPLACE()
 	OUTPUT:
 	RETVAL
 
-#endif
-
 void
 perl_fuse_main(...)
 	PREINIT:
@@ -1639,7 +1708,7 @@ perl_fuse_main(...)
 	struct fuse_chan *fc;
 	dMY_CXT;
 	INIT:
-	if(items != N_CALLBACKS + 5) {
+	if(items != N_CALLBACKS + 6) {
 		fprintf(stderr,"Perl<->C inconsistency or internal error\n");
 		XSRETURN_UNDEF;
 	}
@@ -1665,8 +1734,9 @@ perl_fuse_main(...)
 #if FUSE_VERSION >= 28
 	fops.flag_nullpath_ok = SvIV(ST(4));
 #endif /* FUSE_VERSION >= 28 */
+	MY_CXT.utimens_as_array = SvIV(ST(5));
 	for(i=0;i<N_CALLBACKS;i++) {
-		SV *var = ST(i+5);
+		SV *var = ST(i+6);
 		/* allow symbolic references, or real code references. */
 		if(SvOK(var) && (SvPOK(var) || (SvROK(var) && SvTYPE(SvRV(var)) == SVt_PVCV))) {
 			void **tmp1 = (void**)&_available_ops, **tmp2 = (void**)&fops;
@@ -1681,7 +1751,7 @@ perl_fuse_main(...)
 		} else if(SvOK(var)) {
 			croak("invalid callback (%i) passed to perl_fuse_main "
 			      "(%s is not a string, code ref, or undef).\n",
-			      i+5,SvPVbyte_nolen(var));
+			      i+6,SvPVbyte_nolen(var));
 		} else {
 			MY_CXT.callback[i] = NULL;
 		}
@@ -1716,3 +1786,35 @@ perl_fuse_main(...)
 		fuse_loop(fuse_new(fc,&args,&fops,sizeof(fops),NULL));
 	fuse_unmount(mountpoint,fc);
 	fuse_opt_free_args(&args);
+
+#if FUSE_VERSION >= 28
+
+void
+pollhandle_destroy(...)
+    PREINIT:
+	struct fuse_pollhandle *ph;
+    INIT:
+	if (items != 1) {
+		fprintf(stderr, "No pollhandle passed?\n");
+		XSRETURN_UNDEF;
+	}
+    CODE:
+	ph = INT2PTR(struct fuse_pollhandle*, SvIV(ST(0)));
+	fuse_pollhandle_destroy(ph);
+
+int 
+notify_poll(...)
+    PREINIT:
+	struct fuse_pollhandle *ph;
+    INIT:
+	if (items != 1) {
+		fprintf(stderr, "No pollhandle passed?\n");
+		XSRETURN_UNDEF;
+	}
+    CODE:
+	ph = INT2PTR(struct fuse_pollhandle*, SvIV(ST(0)));
+	RETVAL = fuse_notify_poll(ph);
+    OUTPUT:
+	RETVAL
+
+#endif

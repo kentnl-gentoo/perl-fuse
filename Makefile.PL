@@ -29,7 +29,7 @@ package main;
 
 chomp(my $fusever = `pkg-config --modversion fuse 2> /dev/null`);
 # Required for refuse on NetBSD
-unless ($fusever) {
+if (!$fusever && $^O eq 'netbsd') {
     chomp($fusever = `fusermount -V`);
     $fusever =~ s/^.*?version:\s+//;
 }
@@ -54,8 +54,8 @@ unless ($fusever) {
     elsif ($^O eq 'netbsd') {
         $explanation = 'Could not find librefuse? Maybe install "perfuse" from pkgsrc, or upgrade to newer NetBSD';
     }
-    elsif ($^O = 'darwin') {
-        $explanation = 'Please install MacFuse from http://code.google.com/p/macfuse/';
+    elsif ($^O eq 'darwin') {
+        $explanation = 'Please install OSXFUSE from http://osxfuse.github.com/';
     }
     else {
         $explanation = 'There is no FUSE support for your platform to our knowledge, sorry';
@@ -68,14 +68,15 @@ if ($fusever && $fusever + 0 < 2.6) {
     warn "fuse version found: ", $fusever, "\n";
 }
 
-chomp(my $inc = `pkg-config --cflags-only-I fuse 2> /dev/null` || '-I ../include');
+chomp(my $inc = `pkg-config --cflags-only-I fuse 2> /dev/null`);
 chomp(my $libs = `pkg-config --libs-only-L fuse 2> /dev/null`);
 chomp($libs .= `pkg-config --libs-only-l fuse 2> /dev/null` || (($^O eq 'netbsd') ? '-lrefuse' : '-lfuse'));
 # Needed for Fuse on OS X 10.6, due to 10.6 and up always using the 64-bit
 # inode structs; unfortunately MacFuse doesn't just do the right thing
-# on its own.
-if ($^O eq 'darwin' && (uname())[2] =~ /^10\./) {
-    $libs =~ s/-lfuse/-lfuse_ino64/;
+# on its own. (Not applicable for OSXFUSE; it uses a new SONAME, so we
+# don't have to worry about conflicts/compatibility, it "just works".)
+if ($^O eq 'darwin' && (uname())[2] =~ /^1[01]\./) {
+    $libs =~ s/-lfuse\b/-lfuse_ino64/;
 }
 chomp(my $def = '-Wall -DFUSE_USE_VERSION=26 ' . `pkg-config --cflags-only-other fuse 2> /dev/null` || '-D_FILE_OFFSET_BITS=64');
 chomp($def .= `pkg-config --libs-only-other fuse 2> /dev/null`);
@@ -92,9 +93,13 @@ WriteMakefile(
     ($] >= 5.005 ?  ## Add these new keywords supported since 5.005
        (ABSTRACT_FROM   => 'Fuse.pm', # retrieve abstract from module
         AUTHOR          => 'Mark Glines <mark@glines.org>') : ()),
+    ($ExtUtils::MakeMaker::VERSION < 6.3002 ? () : (
+        'LICENSE' => 'LGPL_2_1',
+    )),
     ($ExtUtils::MakeMaker::VERSION < 6.46 ? () : (
         META_MERGE => {
             resources => {
+                license => 'http://www.gnu.org/licenses/lgpl-2.1.html',
                 bugtracker => 'https://rt.cpan.org/Public/Dist/Display.html?Name=Fuse',
                 repository => 'http://github.com/dpavlin/perl-fuse'
             },

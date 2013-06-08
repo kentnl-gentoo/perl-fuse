@@ -20,14 +20,15 @@ our @ISA = qw(Exporter DynaLoader);
 # If you do not need this, moving things directly into @EXPORT or @EXPORT_OK
 # will save memory.
 our %EXPORT_TAGS = (
-		    'all' => [ qw(XATTR_CREATE XATTR_REPLACE fuse_get_context fuse_version) ],
-		    'xattr' => [ qw(XATTR_CREATE XATTR_REPLACE) ]
+		    'all' => [ qw(XATTR_CREATE XATTR_REPLACE fuse_get_context fuse_version FUSE_IOCTL_COMPAT FUSE_IOCTL_UNRESTRICTED FUSE_IOCTL_RETRY FUSE_IOCTL_MAX_IOV notify_poll pollhandle_destroy) ],
+		    'xattr' => [ qw(XATTR_CREATE XATTR_REPLACE) ],
+		    'ioctl' => [ qw(FUSE_IOCTL_COMPAT FUSE_IOCTL_UNRESTRICTED FUSE_IOCTL_RETRY FUSE_IOCTL_MAX_IOV) ],
 		    );
 
 our @EXPORT_OK = ( @{ $EXPORT_TAGS{'all'} } );
 
 our @EXPORT = ();
-our $VERSION = '0.14';
+our $VERSION = '0.15';
 
 sub AUTOLOAD {
     # This AUTOLOAD is used to 'autoload' constants from the constant()
@@ -63,40 +64,39 @@ sub AUTOLOAD {
 
 bootstrap Fuse $VERSION;
 
+use constant FUSE_IOCTL_COMPAT		=> (1 << 0);
+use constant FUSE_IOCTL_UNRESTRICTED	=> (1 << 1);
+use constant FUSE_IOCTL_RETRY		=> (1 << 2);
+use constant FUSE_IOCTL_MAX_IOV		=> 256;
+
 sub main {
 	my @names = qw(getattr readlink getdir mknod mkdir unlink rmdir symlink
 			rename link chmod chown truncate utime open read write statfs
-			flush release fsync setxattr getxattr listxattr removexattr);
+			flush release fsync setxattr getxattr listxattr removexattr
+			opendir readdir releasedir fsyncdir init destroy access
+			create ftruncate fgetattr lock utimens bmap);
 	my $fuse_version = fuse_version();
-	if ($fuse_version >= 2.3) {
-		push(@names, qw/opendir readdir releasedir fsyncdir init destroy/);
+	if ($fuse_version >= 2.8) {
+		# junk doesn't contain a function pointer, and hopefully
+		# never will; it's a "dead" zone in the struct
+		# fuse_operations where a flag bit is declared. we don't
+		# need to concern ourselves with it, and it appears any
+		# arch with a 64 bit pointer will align everything to
+		# 8 bytes, making the question of pointer alignment for
+		# the last 2 wrapper functions no big thing.
+		push(@names, qw/junk ioctl poll/);
 	}
-	if ($fuse_version >= 2.5) {
-		push(@names, qw/access create ftruncate fgetattr/);
-	}
-	if ($fuse_version >= 2.6) {
-		push(@names, qw/lock utimens bmap/);
-	}
-#	if ($fuse_version >= 2.8) {
-#		# junk doesn't contain a function pointer, and hopefully
-#		# never will; it's a "dead" zone in the struct
-#		# fuse_operations where a flag bit is declared. we don't
-#		# need to concern ourselves with it, and it appears any
-#		# arch with a 64 bit pointer will align everything to
-#		# 8 bytes, making the question of pointer alignment for
-#		# the last 2 wrapper functions no big thing.
-#		push(@names, qw/junk ioctl poll/);
-#	}
 	my @subs = map {undef} @names;
 	my $tmp = 0;
 	my %mapping = map { $_ => $tmp++ } @names;
-	my @otherargs = qw(debug threaded mountpoint mountopts nullpath_ok);
+	my @otherargs = qw(debug threaded mountpoint mountopts nullpath_ok utimens_as_array);
 	my %otherargs = (
-			  debug		=> 0,
-			  threaded	=> 0,
-			  mountpoint	=> "",
-			  mountopts	=> "",
-			  nullpath_ok	=> 0,
+			  debug			=> 0,
+			  threaded		=> 0,
+			  mountpoint		=> "",
+			  mountopts		=> "",
+			  nullpath_ok		=> 0,
+			  utimens_as_array	=> 0,
 			);
 	while(my $name = shift) {
 		my ($subref) = shift;
@@ -181,29 +181,20 @@ many valid keys.  Most of them correspond with names of callback
 functions, as described in section 'FUNCTIONS YOUR FILESYSTEM MAY IMPLEMENT'.
 A few special keys also exist:
 
-
-debug => boolean
-
 =over 1
+
+=item debug => boolean
 
 This turns FUSE call tracing on and off.  Default is 0 (which means off).
 
-=back
-
-mountpoint => string
-
-=over 1
+=item mountpoint => string
 
 The point at which to mount this filesystem.  There is no default, you must
 specify this.  An example would be '/mnt'.
 
-=back
+=item mountopts => string
 
-mountopts => string
-
-=over 1
-
-This is a comma seperated list of mount options to pass to the FUSE kernel
+This is a comma separated list of mount options to pass to the FUSE kernel
 module.
 
 At present, it allows the specification of the allow_other
@@ -213,11 +204,7 @@ need 'user_allow_other' in /etc/fuse.conf as per the FUSE documention
   mountopts => "allow_other" or
   mountopts => ""
 
-=back
-
-threaded => boolean
-
-=over 1
+=item threaded => boolean
 
 This turns FUSE multithreading on and off.  The default is 0, meaning your FUSE
 script will run in single-threaded mode.  Note that single-threaded mode also
@@ -241,11 +228,7 @@ you're using are also thread-safe.
 built with USE_ITHREADS, or if you have failed to use threads or
 threads::shared.)
 
-=back
-
-nullpath_ok => boolean
-
-=over 1
+=item nullpath_ok => boolean
 
 This flag tells Fuse to not pass paths for functions that operate on file
 or directory handles. This will yield empty path parameters for functions
@@ -253,6 +236,14 @@ including read, write, flush, release, fsync, readdir, releasedir,
 fsyncdir, truncate, fgetattr and lock. If you use this, you must return
 file/directory handles from open, opendir and create. Default is 0 (off).
 Only effective on Fuse 2.8 and up; with earlier versions, this does nothing.
+
+=item utimens_as_array => boolean
+
+This flag causes timestamps passed via the utimens() call to be passed
+as arrays containing the time in seconds, and a second value containing
+the number of nanoseconds, instead of a floating point value. This allows
+for more precise times, as the normal floating point type used by Perl
+(double) loses accuracy starting at about tenths of a microsecond.
 
 =back
 
@@ -271,11 +262,45 @@ Indicates the Fuse version in use; more accurately, indicates the version
 of the Fuse API in use at build time. Returned as a decimal value; i.e.,
 for Fuse API v2.6, will return "2.6".
 
+=head3 Fuse::notify_poll
+
+Only available if the Fuse module is built against libfuse 2.8 or later.
+Use fuse_version() to determine if this is the case. Calling this function
+with a pollhandle argument (as provided to the C<poll> operation
+implementation) will send a notification to the caller poll()ing for
+I/O operation availability. If more than one pollhandle is provided for
+the same filehandle, only use the latest; you *can* send notifications
+to them all, but it is unnecessary and decreases performance.
+
+ONLY supply poll handles fed to you through C<poll> to this function.
+Due to thread safety requirements, we can't currently package the pointer
+up in an object the way we'd like to to prevent this situation, but your
+filesystem server program may segfault, or worse, if you feed things to
+this function which it is not supposed to receive. If you do anyway, we
+take no responsibility for whatever Bad Things(tm) may happen.
+
+=head3 Fuse::pollhandle_destroy
+
+Only available if the Fuse module is built against libfuse 2.8 or later.
+Use fuse_version() to determine if this is the case. This function destroys
+a poll handle (fed to your program through C<poll>). When you are done
+with a poll handle, either because it has been replaced, or because a
+notification has been sent to it, pass it to this function to dispose of
+it safely.
+
+ONLY supply poll handles fed to you through C<poll> to this function.
+Due to thread safety requirements, we can't currently package the pointer
+up in an object the way we'd like to to prevent this situation, but your
+filesystem server program may segfault, or worse, if you feed things to
+this function which it is not supposed to receive. If you do anyway, we
+take no responsibility for whatever Bad Things(tm) may happen.
+
 =head2 FUNCTIONS YOUR FILESYSTEM MAY IMPLEMENT
 
 =head3 getattr
 
 Arguments:  filename.
+
 Returns a list, very similar to the 'stat' function (see
 perlfunc).  On error, simply return a single numeric scalar
 value (e.g. "return -ENOENT();").
@@ -308,9 +333,18 @@ Here are the meaning of the fields:
 
 (The epoch was at 00:00 January 1, 1970 GMT.)
 
+If you wish to provide sub-second precision timestamps, they may be
+passed either as the fractional part of a floating-point value, or as a
+two-element array, passed as an array ref, with the first element
+containing the number of seconds since the epoch, and the second
+containing the number of nanoseconds. This provides complete time
+precision, as a floating point number starts losing precision at about
+a tenth of a microsecond. So if you really care about that sort of thing...
+
 =head3 readlink
 
 Arguments:  link pathname.
+
 Returns a scalar: either a numeric constant, or a text string.
 
 This is called when dereferencing symbolic links, to learn the target.
@@ -320,6 +354,7 @@ example rv: return "/proc/self/fd/stdin";
 =head3 getdir
 
 Arguments:  Containing directory name.
+
 Returns a list: 0 or more text strings (the filenames), followed by a numeric errno (usually 0).
 
 This is used to obtain directory listings.  It's opendir(), readdir(), filldir() and closedir() all in one call.
@@ -329,6 +364,7 @@ example rv: return ('.', 'a', 'b', 0);
 =head3 mknod
 
 Arguments:  Filename, numeric modes, numeric device
+
 Returns an errno (0 upon success, as usual).
 
 This function is called for all non-directory, non-symlink nodes,
@@ -337,6 +373,7 @@ not just devices.
 =head3 mkdir
 
 Arguments:  New directory pathname, numeric modes.
+
 Returns an errno.
 
 Called to create a directory.
@@ -344,6 +381,7 @@ Called to create a directory.
 =head3 unlink
 
 Arguments:  Filename.
+
 Returns an errno.
 
 Called to remove a file, device, or symlink.
@@ -351,6 +389,7 @@ Called to remove a file, device, or symlink.
 =head3 rmdir
 
 Arguments:  Pathname.
+
 Returns an errno.
 
 Called to remove a directory.
@@ -358,6 +397,7 @@ Called to remove a directory.
 =head3 symlink
 
 Arguments:  Existing filename, symlink name.
+
 Returns an errno.
 
 Called to create a symbolic link.
@@ -365,6 +405,7 @@ Called to create a symbolic link.
 =head3 rename
 
 Arguments:  old filename, new filename.
+
 Returns an errno.
 
 Called to rename a file, and/or move a file from one directory to another.
@@ -372,6 +413,7 @@ Called to rename a file, and/or move a file from one directory to another.
 =head3 link
 
 Arguments:  Existing filename, hardlink name.
+
 Returns an errno.
 
 Called to create hard links.
@@ -379,6 +421,7 @@ Called to create hard links.
 =head3 chmod
 
 Arguments:  Pathname, numeric modes.
+
 Returns an errno.
 
 Called to change permissions on a file/directory/device/symlink.
@@ -386,6 +429,7 @@ Called to change permissions on a file/directory/device/symlink.
 =head3 chown
 
 Arguments:  Pathname, numeric uid, numeric gid.
+
 Returns an errno.
 
 Called to change ownership of a file/directory/device/symlink.
@@ -393,6 +437,7 @@ Called to change ownership of a file/directory/device/symlink.
 =head3 truncate
 
 Arguments:  Pathname, numeric offset.
+
 Returns an errno.
 
 Called to truncate a file, at the given offset.
@@ -400,6 +445,7 @@ Called to truncate a file, at the given offset.
 =head3 utime
 
 Arguments:  Pathname, numeric actime, numeric modtime.
+
 Returns an errno.
 
 Called to change access/modification times for a file/directory/device/symlink.
@@ -408,19 +454,21 @@ Called to change access/modification times for a file/directory/device/symlink.
 
 Arguments:  Pathname, numeric flags (which is an OR-ing of stuff like O_RDONLY
 and O_SYNC, constants you can import from POSIX), fileinfo hash reference.
+
 Returns an errno, a file handle (optional).
 
-No creation, or trunctation flags (O_CREAT, O_EXCL, O_TRUNC) will be passed to open().
+No creation, or truncation flags (O_CREAT, O_EXCL, O_TRUNC) will be passed to open().
 The fileinfo hash reference contains flags from the Fuse open call which may be modified by the module. The only fields presently supported are:
  direct_io (version 2.4 onwards)
  keep_cache (version 2.4 onwards)
- nonseekable (version 2.9 onwards)
+ nonseekable (version 2.8 onwards)
 Your open() method needs only check if the operation is permitted for the given flags, and return 0 for success.
 Optionally a file handle may be returned, which will be passed to subsequent read, write, flush, fsync and release calls.
 
 =head3 read
 
 Arguments:  Pathname, numeric requested size, numeric offset, file handle
+
 Returns a numeric errno, or a string scalar with up to $requestedsize bytes of data.
 
 Called in an attempt to fetch a portion of the file.
@@ -436,6 +484,7 @@ Called in an attempt to write (or overwrite) a portion of the file.  Be prepared
 =head3 statfs
 
 Arguments:  none
+
 Returns any of the following:
 
 -ENOANO()
@@ -451,6 +500,7 @@ or
 =head3 flush
 
 Arguments: Pathname, file handle
+
 Returns an errno or 0 on success.
 
 Called to synchronise any cached data. This is called before the file
@@ -459,6 +509,7 @@ is closed. It may be called multiple times before a file is closed.
 =head3 release
 
 Arguments: Pathname, numeric flags passed to open, file handle
+
 Returns an errno or 0 on success.
 
 Called to indicate that there are no more references to the file. Called once
@@ -467,6 +518,7 @@ for every file with the same pathname and flags as were passed to open.
 =head3 fsync
 
 Arguments: Pathname, numeric flags
+
 Returns an errno or 0 on success.
 
 Called to synchronise the file's contents. If flags is non-zero,
@@ -475,6 +527,7 @@ only synchronise the user data. Otherwise synchronise the user and meta data.
 =head3 setxattr
 
 Arguments: Pathname, extended attribute's name, extended attribute's value, numeric flags (which is an OR-ing of XATTR_CREATE and XATTR_REPLACE 
+
 Returns an errno or 0 on success.
 
 Called to set the value of the named extended attribute.
@@ -498,6 +551,7 @@ or:
 =head3 getxattr
 
 Arguments: Pathname, extended attribute's name
+
 Returns an errno, 0 if there was no value, or the extended attribute's value.
 
 Called to get the value of the named extended attribute.
@@ -505,12 +559,16 @@ Called to get the value of the named extended attribute.
 =head3 listxattr
 
 Arguments: Pathname
+
 Returns a list: 0 or more text strings (the extended attribute names), followed by a numeric errno (usually 0).
 
 =head3 removexattr
 
 Arguments: Pathname, extended attribute's name
+
 Returns an errno or 0 on success.
+
+Removes the named extended attribute (if present) from a file.
 
 =head3 opendir
 
@@ -524,6 +582,7 @@ that.
 =head3 readdir
 
 Arguments: Pathname of a directory, numeric offset, (optional) directory handle
+
 Returns a list of 0 or more entries, followed by a numeric errno (usually 0).
 The entries can be simple strings (filenames), or arrays containing an
 offset number, the filename, and optionally an array ref containing the
@@ -541,6 +600,7 @@ Note that if this call is implemented, it overrides getdir() ALWAYS.
 =head3 releasedir
 
 Arguments: Pathname of a directory, (optional) directory handle
+
 Returns an errno or 0 on success
 
 Called when there are no more references to an opened directory. Called once
@@ -551,6 +611,7 @@ code will not propagate to any corresponding closedir() calls.
 =head3 fsyncdir
 
 Arguments: Pathname of a directory, numeric flags, (optional) directory handle
+
 Returns an errno or 0 on success.
 
 Called to synchronize any changes to a directory's contents. If flag is
@@ -560,16 +621,19 @@ metadata.
 =head3 init
 
 Arguments: None.
+
 Returns (optionally) an SV to be passed as private_data via fuse_get_context().
 
 =head3 destroy
 
 Arguments: (optional) private data SV returned from init(), if any.
+
 Returns nothing.
 
 =head3 access
 
 Arguments: Pathname, access mode flags
+
 Returns an errno or 0 on success.
 
 Determine if the user attempting to access the indicated file has access to
@@ -579,6 +643,7 @@ fuse_get_context(). See access(2) for more information.
 =head3 create
 
 Arguments: Pathname, create mask, open mode flags
+
 Returns errno or 0 on success, and (optional) file handle.
 
 Create a file with the path indicated, then open a handle for reading and/or
@@ -588,6 +653,7 @@ open() as part of the call.
 =head3 ftruncate
 
 Arguments: Pathname, numeric offset, (optional) file handle
+
 Returns errno or 0 on success
 
 Like truncate(), but on an opened file.
@@ -595,6 +661,7 @@ Like truncate(), but on an opened file.
 =head3 fgetattr
 
 Arguments: Pathname, (optional) file handle
+
 Returns a list, very similar to the 'stat' function (see
 perlfunc).  On error, simply return a single numeric scalar
 value (e.g. "return -ENOENT();").
@@ -604,6 +671,7 @@ Like getattr(), but on an opened file.
 =head3 lock
 
 Arguments: Pathname, numeric command code, hashref containing lock parameters, (optional) file handle
+
 Returns errno or 0 on success
 
 Used to lock or unlock regions of a file. Locking is handled locally, but this
@@ -616,24 +684,89 @@ for the lock constants can be obtained by importing Fcntl.
 =head3 utimens
 
 Arguments: Pathname, last accessed time, last modified time
+
 Returns errno or 0 on success
 
-Like utime(), but allows time resolution down to the nanosecond. Currently
-times are passed as "numeric" (internally I believe these are represented
-typically as "long double"), so the sub-second portion is represented as
-fractions of a second.
+Like utime(), but allows time resolution down to the nanosecond. By default,
+times are passed as "numeric" (internally these are typically represented
+as "double"), so the sub-second portion is represented as fractions of a
+second. If you want times passed as arrays instead of floating point
+values, for higher precision, you should pass the C<utimens_as_array> option
+to C<Fuse::main>.
 
 Note that if this call is implemented, it overrides utime() ALWAYS.
 
 =head3 bmap
 
 Arguments: Pathname, numeric blocksize, numeric block number
+
 Returns errno or 0 on success, and physical block number if successful
 
 Used to map a block number offset in a file to the physical block offset
 on the block device backing the file system. This is intended for
 filesystems that are stored on an actual block device, with the 'blkdev'
 option passed.
+
+=head3 ioctl
+
+Arguments: Pathname, ioctl command code, flags, data if ioctl op is a write, (optional) file handle
+
+Returns errno or 0 on success, and data if ioctl op is a read
+
+Used to handle ioctl() operations on files. See ioctl(2) for more
+information on the fine details of ioctl operation numbers. May need to
+h2ph system headers to get the necessary macros; keep in mind the macros
+are highly OS-dependent.
+
+Keep in mind that read and write are from the client perspective, so
+read from our end means data is going *out*, and write means data is
+coming *in*. It can be slightly confusing.
+
+=head3 poll
+
+Arguments: Pathname, poll handle ID (or undef if none), event mask, (optional) file handle
+
+Returns errno or 0 on success, and updated event mask on success
+
+Used to handle poll() operations on files. See poll(2) to learn more about
+event polling. Use IO::Poll to get the POLLIN, POLLOUT, and other symbols
+to describe the events which can happen on the filehandle. Save the poll
+handle ID to be passed to C<notify_poll> and C<pollhandle_destroy>
+functions, if it is not undef. Threading will likely be necessary for this
+operation to work.
+
+There is not an "out of band" data transfer channel provided as part of
+FUSE, so POLLPRI/POLLRDBAND/POLLWRBAND won't work.
+
+Poll handle is currently a read-only scalar; we are investigating a way
+to make this an object instead.
+
+=head1 EXAMPLES
+
+There are a few example scripts in the examples/ subdirectory.  These are:
+
+example.pl
+
+	A simple "Hello world" type of script
+
+loopback.pl
+
+	A filesystem loopback-device.  like fusexmp from the main FUSE dist,
+	it simply recurses file operations into the real filesystem.  Unlike
+	fusexmp, it only re-shares files under the /tmp/test directory.
+
+rmount.pl
+
+	An NFS-workalike which tunnels through SSH. It requires an account
+	on some ssh server (obviously), with public-key authentication enabled.
+	(if you have to type in a password, you don't have this. man ssh_keygen.).
+	Copy rmount_remote.pl to your home directory on the remote machine
+	and make it executable. Then create a mountpoint subdir somewhere local,
+	and run the example script: ./rmount.pl host /remote/dir /local/dir
+
+rmount_remote.pl
+
+	A ripoff of loopback.pl meant to be used as a backend for rmount.pl.
 
 =head1 AUTHOR
 
