@@ -36,7 +36,7 @@
 		STAT_SEC(st, st_xtim) = SvIV(*(av_fetch(av, 0, FALSE))); \
 		STAT_NSEC(st, st_xtim) = SvIV(*(av_fetch(av, 1, FALSE))); \
 	}								\
-	else if (SvNOK(sv) || SvIOK(sv)) {				\
+	else if (SvNOK(sv) || SvIOK(sv) || SvPOK(sv)) {			\
 		double tm = SvNV(sv);					\
 		STAT_SEC(st, st_xtim) = (int)tm;			\
 		STAT_NSEC(st, st_xtim) = (tm - (int)tm) * 1000000000;	\
@@ -100,9 +100,9 @@ tTHX S_clone_interp(tTHX parent) {
 		PERL_SET_CONTEXT(parent);
 		dTHX;
 #if (PERL_VERSION > 10) || (PERL_VERSION == 10 && PERL_SUBVERSION >= 1)
-		tTHX child = perl_clone(parent, CLONEf_CLONE_HOST);
+		tTHX child = perl_clone(parent, CLONEf_CLONE_HOST | CLONEf_COPY_STACKS);
 #else
-		tTHX child = perl_clone(parent, CLONEf_CLONE_HOST | CLONEf_KEEP_PTR_TABLE);
+		tTHX child = perl_clone(parent, CLONEf_CLONE_HOST | CLONEf_COPY_STACKS | CLONEf_KEEP_PTR_TABLE);
 		ptr_table_free(PL_ptr_table);
 		PL_ptr_table = NULL;
 #endif
@@ -681,8 +681,8 @@ int _PLfuse_statfs (const char *file, struct statvfs *st) {
 		st->f_namemax	= POPi;
 		/* zero and fill-in other */
 		st->f_fsid = 0;
-		st->f_frsize = 4096;
 		st->f_flag = 0;
+		st->f_frsize = st->f_bsize;
 		st->f_bavail = st->f_bfree;
 		st->f_favail = st->f_ffree;
 
