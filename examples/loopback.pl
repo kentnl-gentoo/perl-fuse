@@ -30,6 +30,7 @@ eval {
 	1;
 } and do {
 	$use_lchown = 1;
+	Lchown->import();
 };
 
 my $has_mknod = 0;
@@ -38,6 +39,7 @@ eval {
         1;
 } and do {
         $has_mknod = 1;
+	Unix::Mknod->import();
 };
 
 use blib;
@@ -48,7 +50,7 @@ use Fcntl qw(S_ISBLK S_ISCHR S_ISFIFO SEEK_SET S_ISREG S_ISFIFO S_IMODE S_ISCHR 
 use Getopt::Long;
 
 my %extraopts = ( 'threaded' => 0, 'debug' => 0 );
-my($use_real_statfs, $pidfile);
+my($use_real_statfs, $pidfile, $logfile);
 GetOptions(
     'use-threads'       => sub {
         if ($has_threads) {
@@ -60,6 +62,7 @@ GetOptions(
     },
     'use-real-statfs'   => \$use_real_statfs,
     'pidfile=s'         => \$pidfile,
+    'logfile=s'         => \$logfile,
 ) || die('Error parsing options');
 
 sub fixup { return "/tmp/fusetest-" . $ENV{LOGNAME} . shift }
@@ -89,6 +92,11 @@ sub x_open {
     return 0;
 }
 
+sub x_release {
+    my ($file) = fixup(shift);
+    return 0;
+}
+
 sub x_read {
     my ($file,$bufsize,$off) = @_;
     my ($rv) = -ENOSYS();
@@ -98,6 +106,19 @@ sub x_read {
     return -ENOSYS() unless open($handle,$file);
     if(seek($handle,$off,SEEK_SET)) {
         read($handle,$rv,$bufsize);
+    }
+    return $rv;
+}
+
+sub x_read_buf {
+    my ($file, $size, $off, $bufvec) = @_;
+    my $rv = 0;
+    my ($handle) = new IO::File;
+    return -ENOENT() unless -e ($file = fixup($file));
+    my ($fsize) = -s $file;
+    return -ENOSYS() unless open($handle,$file);
+    if(seek($handle,$off,SEEK_SET)) {
+        $rv = $bufvec->[0]{'size'} = read($handle,$bufvec->[0]{'mem'},$size);
     }
     return $rv;
 }
@@ -114,6 +135,33 @@ sub x_write {
     $rv = -ENOSYS() unless $rv;
     close(FILE);
     return length($buf);
+}
+
+sub x_write_buf {
+    my ($file,$off,$bufvec) = @_;
+    my ($rv);
+    return -ENOENT() unless -e ($file = fixup($file));
+    my ($fsize) = -s $file;
+    return -ENOSYS() unless open(FILE,'+<',$file);
+    # If by some chance we get a non-contiguous buffer, or an FD-based
+    # buffer (or both!), then copy all of it into one contiguous buffer.
+    if ($#$bufvec > 0 || $bufvec->[0]{flags} & &Fuse::FUSE_BUF_IS_FD()) {
+        my $single = [ {
+                flags   => 0,
+                fd      => -1,
+                mem     => undef,
+                pos     => 0,
+                size    => Fuse::fuse_buf_size($bufvec),
+        } ];
+        Fuse::fuse_buf_copy($single, $bufvec);
+        $bufvec = $single;
+    }
+    if($rv = seek(FILE,$off,SEEK_SET)) {
+        $rv = print(FILE $bufvec->[0]{mem});
+    }
+    $rv = -ENOSYS() unless $rv;
+    close(FILE);
+    return $rv;
 }
 
 sub err { return (-shift || -$!) }
@@ -153,6 +201,17 @@ sub x_utime { return utime($_[1],$_[2],fixup($_[0])) ? 0:-$!; }
 
 sub x_mkdir { my ($name, $perm) = @_; return 0 if mkdir(fixup($name),$perm); return -$!; }
 sub x_rmdir { return 0 if rmdir fixup(shift); return -$!; }
+
+sub x_create {
+    my ($file, $modes, $flags) = @_;
+    printf(STDERR "x_create(): file: \"\%s\"; modes: \%o; flags: \%o\n", $file, $modes, $flags);
+    $file = fixup($file);
+    open(FILE, '>', $file) || return -$!;
+    print FILE '';
+    close(FILE);
+    chmod S_IMODE($modes), $file;
+    return 0;
+}
 
 sub x_mknod {
     # since this is called for ALL files, not just devices, I'll do some checks
@@ -202,13 +261,17 @@ sub x_statfs {
 # from http://perldoc.perl.org/perlipc.html#Complete-Dissociation-of-Child    -from-Parent
 sub daemonize {
     chdir("/") || die "can't chdir to /: $!";
-    open(STDIN, "< /dev/null") || die "can't read /dev/null: $!";
-    open(STDOUT, "> /dev/null") || die "can't write to /dev/null: $!";
+    open(STDIN, '<', '/dev/null') || die "can't read /dev/null: $!";
+    if ($logfile) {
+        open(STDOUT, '>', $logfile) || die "can't open logfile: $!";
+    }
+    else {
+        open(STDOUT, '>', '/dev/null') || die "can't write to /dev/null: $!";
+    }
     defined(my $pid = fork()) || die "can't fork: $!";
     exit if $pid; # non-zero now means I am the parent
     (setsid() != -1) || die "Can't start a new session: $!";
-    open(STDERR, ">&STDOUT") || die "can't dup stdout: $!";
-
+    open(STDERR, '>&', \*STDOUT) || die "can't dup stdout: $!";
     if ($pidfile) {
         open(PIDFILE, '>', $pidfile);
         print PIDFILE $$, "\n";
@@ -217,16 +280,23 @@ sub daemonize {
 }
 
 my ($mountpoint) = '';
-if(@ARGV){
+if (@ARGV){
         $mountpoint = shift(@ARGV)
-}else{
-        print "\n Usage: loopback.pl <mountpoint> [options]
-        \n Options:
+}
+else {
+        print <<'_EOT_';
+
+ Usage: loopback.pl <mountpoint> [options]
+
+ Options:
  --debug                Turn on debugging (verbose) output
  --use-threads          Use threads
  --use-real-statfs      Use real stat command against /tmp or generic values
- --pidfile              Set pidfile value --pidfile=<numeric-value>\n\n";
-        exit;
+ --pidfile              Create a file at the provided path containing PID
+ --logfile              Direct stdout/stderr to file instead of /dev/null
+
+_EOT_
+	exit;
 }
 
 if (! -d $mountpoint) {
@@ -241,6 +311,7 @@ Fuse::main(
     'getattr'       => 'main::x_getattr',
     'readlink'      => 'main::x_readlink',
     'getdir'        => 'main::x_getdir',
+    'create'        => 'main::x_create',
     'mknod'         => 'main::x_mknod',
     'mkdir'         => 'main::x_mkdir',
     'unlink'        => 'main::x_unlink',
@@ -253,8 +324,11 @@ Fuse::main(
     'truncate'      => 'main::x_truncate',
     'utime'         => 'main::x_utime',
     'open'          => 'main::x_open',
+    'release'       => 'main::x_release',
     'read'          => 'main::x_read',
+    'read_buf'      => 'main::x_read_buf',
     'write'         => 'main::x_write',
+    'write_buf'     => 'main::x_write_buf',
     'statfs'        => 'main::x_statfs',
     %extraopts,
 );

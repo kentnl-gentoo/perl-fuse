@@ -39,3 +39,4 @@ examples/fselclient.pl
 examples/loopback.pl
 examples/rmount_remote.pl
 examples/rmount.pl
+META.json                                Module JSON meta-data (added by MakeMaker)

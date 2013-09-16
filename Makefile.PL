@@ -57,6 +57,16 @@ unless ($fusever) {
     elsif ($^O eq 'darwin') {
         $explanation = 'Please install OSXFUSE from http://osxfuse.github.com/';
     }
+    elsif ($^O eq 'solaris') {
+        open(my $motd, '<', '/etc/motd');
+        my $line = <$motd>;
+        if ($line =~ /^OpenIndiana /) {
+            $explanation = 'Please enable the \'sfe\' repository, and install the libfuse package';
+        }
+        else {
+            $explanation = 'Don\'t know how to enable FUSE support on this Solaris flavor';
+        }
+    }
     else {
         $explanation = 'There is no FUSE support for your platform to our knowledge, sorry';
     }
@@ -81,6 +91,19 @@ if ($^O eq 'darwin' && (uname())[2] =~ /^1[01]\./) {
 chomp(my $def = '-Wall -DFUSE_USE_VERSION=26 ' . `pkg-config --cflags-only-other fuse 2> /dev/null` || '-D_FILE_OFFSET_BITS=64');
 chomp($def .= `pkg-config --libs-only-other fuse 2> /dev/null`);
 $def .= ' -DPERL_HAS_64BITINT' if $Config{'use64bitint'};
+$def .= ' -DUSING_LIBREFUSE' if $libs =~ m{-lrefuse\b};
+
+# As a feature was added in a micro version update (fallocate(),
+# specifically), we need to know the micro version level, and there's
+# nothing in the headers that supplies it, so I'm gonna ghetto this
+# up.
+my ($major, $minor, $micro) = split(m{\.}, $fusever);
+if (!defined $micro) {
+    $micro = 0;
+}
+$def .= ' -DFUSE_FOUND_MAJOR_VER=' . $major;
+$def .= ' -DFUSE_FOUND_MINOR_VER=' . $minor;
+$def .= ' -DFUSE_FOUND_MICRO_VER=' . $micro;
 
 WriteMakefile(
     'NAME'          => 'Fuse',
@@ -105,7 +128,7 @@ WriteMakefile(
             },
         })
     ),
-    'LIBS'          => '-lpthread ' . $libs, # e.g., '-lm'
+    'LIBS'          => $libs, # e.g., '-lm'
     'DEFINE'        => $def, # e.g., '-DHAVE_SOMETHING'
     'OPTIMIZE'      => '-g -ggdb',
     # Insert -I. if you add *.h files later:

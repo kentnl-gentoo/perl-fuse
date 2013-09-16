@@ -105,3 +105,17 @@ Revision history for Perl extension Fuse.
 	- Improve compatibility with Fuse4X.
 	- Improve future compatibility with non-Linux FUSE 2.8
 	  implementations.
+
+0.16
+	- Fix unbounded stack growth due to previous changes in getdir()
+	  and readdir() wrappers that didn't properly decrement SP.
+	  [RT #77321]
+	- Implement support for FUSE 2.9 specific operations. (flock,
+	  read_buf, write_buf, fallocate)
+	- Implement helper functions (fuse_buf_size, fuse_buf_copy) for
+	  handling generic buffers inside read_buf and write_buf
+	  wrappers.
+	- Make the write() wrapper do less data copying.
+	- Improve compatibility with OpenIndiana (an open flavor of
+	  Solaris).
+	- Add support for OpenBSD's flavor of FUSE.

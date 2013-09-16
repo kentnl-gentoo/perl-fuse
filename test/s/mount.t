@@ -5,8 +5,9 @@ use Errno qw(:POSIX);
 use Test::More tests => 3;
 
 sub is_mounted {
-	my $diag = -e '/proc/mounts' ? `cat /proc/mounts` : ($^O eq 'linux' ? `/bin/mount` : `/sbin/mount`);
-	return $diag =~ m{ (?:/private)?$_point };
+	my $diag = -e '/proc/mounts' ? `cat /proc/mounts` : ($^O eq 'linux' ? `/bin/mount` : ($^O eq 'solaris' ? `/usr/sbin/mount` : `/sbin/mount`));
+	my $pattern = $^O eq 'solaris' ? qr{^$_point }m : qr{ (?:/private)?$_point };
+	return $diag =~ $pattern;
 }
 
 ok(!is_mounted(),"already mounted");
@@ -17,7 +18,7 @@ mkdir $_real;
 diag "mounting $_loop to $_point";
 open REALSTDOUT, '>&STDOUT';
 open REALSTDERR, '>&STDERR';
-open STDOUT, '>', '/tmp/fusemnt.log';
+open STDOUT, '>', '/dev/null';
 open STDERR, '>&', \*STDOUT;
 system("perl -Iblib/lib -Iblib/arch $_loop $_opts $_point");
 open STDOUT, '>&', \*REALSTDOUT;
