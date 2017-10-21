@@ -4,11 +4,12 @@ package # avoid cpan indexing
 use strict;
 use Exporter;
 use Config;
+use File::Spec;
 use POSIX qw(WEXITSTATUS);
 our ($VERSION, @ISA, @EXPORT, @EXPORT_OK, %EXPORT_TAGS);
 @ISA = "Exporter";
 @EXPORT_OK = qw($_loop $_opts $_point $_pidfile $_real);
-my $tmp = -d '/private' ? '/private/tmp' : '/tmp';
+my $tmp = File::Spec->tmpdir;
 our($_loop, $_point, $_pidfile, $_real, $_opts) = ('examples/loopback.pl',"$tmp/fusemnt-".$ENV{LOGNAME},$ENV{'PWD'} . "/test/s/mounted.pid","$tmp/fusetest-".$ENV{LOGNAME}, '');
 $_opts = ' --pidfile ' . $_pidfile;
 $_opts .= ' --logfile /tmp/fusemnt.log';
